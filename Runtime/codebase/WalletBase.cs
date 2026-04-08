@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Linq;
 using System.Threading.Tasks;
 using Cysharp.Threading.Tasks;
@@ -263,6 +264,16 @@ namespace Solana.Unity.SDK
 
         /// <inheritdoc />
         public abstract Task<byte[]> SignMessage(byte[] message);
+
+        /// <summary>
+        /// Sign a UTF-8 encoded string message
+        /// </summary>
+        /// <param name="message">The string message to sign</param>
+        /// <returns>The signature bytes</returns>
+        public Task<byte[]> SignMessage(string message)
+        {
+            return SignMessage(Encoding.UTF8.GetBytes(message));
+        }
 
         /// <summary>
         /// Airdrop sol on wallet

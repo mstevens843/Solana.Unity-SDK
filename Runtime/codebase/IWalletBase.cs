@@ -106,6 +106,13 @@ namespace Solana.Unity.SDK
         Task<byte[]> SignMessage(byte[] message);
 
         /// <summary>
+        /// Sign a UTF-8 encoded string message
+        /// </summary>
+        /// <param name="message">The string message to sign</param>
+        /// <returns>The signature bytes</returns>
+        Task<byte[]> SignMessage(string message);
+
+        /// <summary>
         /// Sign and send a transaction
         /// </summary>
         /// <param name="transaction"></param>
