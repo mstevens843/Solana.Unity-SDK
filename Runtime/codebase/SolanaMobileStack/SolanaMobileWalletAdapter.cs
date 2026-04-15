@@ -19,20 +19,31 @@ namespace Solana.Unity.SDK
         public string iconUri = "/favicon.ico";
         public string name = "Solana.Unity-SDK";
         public bool keepConnectionAlive = true;
+        public string siwsDomain = null;
+        public string siwsStatement = null;
     }
     
     
     [Obsolete("Use SolanaWalletAdapter class instead, which is the cross platform wrapper.")]
     public class SolanaMobileWalletAdapter : WalletBase
     {
+        private static readonly Dictionary<string, string> ClusterToChain = new()
+        {
+            { "mainnet-beta", "solana:mainnet" },
+            { "devnet", "solana:devnet" },
+            { "testnet", "solana:testnet" },
+        };
+
         private readonly SolanaMobileWalletAdapterOptions _walletOptions;
-        
+
         private Transaction _currentTransaction;
 
         private TaskCompletionSource<Account> _loginTaskCompletionSource;
         private TaskCompletionSource<Transaction> _signedTransactionTaskCompletionSource;
         private readonly WalletBase _internalWallet;
         private string _authToken;
+
+        public SignInResult LastSignInResult { get; private set; }
 
         public SolanaMobileWalletAdapter(
             SolanaMobileWalletAdapterOptions solanaWalletOptions,
@@ -59,15 +70,34 @@ namespace Solana.Unity.SDK
             AuthorizationResult authorization = null;
             var localAssociationScenario = new LocalAssociationScenario();
             var cluster = RPCNameMap[(int)RpcCluster];
+            var useSiws = !string.IsNullOrEmpty(_walletOptions.siwsDomain);
             var result = await localAssociationScenario.StartAndExecute(
                 new List<Action<IAdapterOperations>>
                 {
                     async client =>
                     {
-                        authorization = await client.Authorize(
-                            new Uri(_walletOptions.identityUri),
-                            new Uri(_walletOptions.iconUri, UriKind.Relative),
-                            _walletOptions.name, cluster);
+                        if (useSiws)
+                        {
+                            var chain = ClusterToChain.TryGetValue(cluster, out var c) ? c : "solana:mainnet";
+                            var signInPayload = new JsonRequest.SignInPayload
+                            {
+                                Domain = _walletOptions.siwsDomain,
+                                Statement = _walletOptions.siwsStatement,
+                                Uri = _walletOptions.identityUri
+                            };
+                            authorization = await client.Authorize(
+                                new Uri(_walletOptions.identityUri),
+                                new Uri(_walletOptions.iconUri, UriKind.Relative),
+                                _walletOptions.name,
+                                chain, null, null, null, signInPayload);
+                        }
+                        else
+                        {
+                            authorization = await client.Authorize(
+                                new Uri(_walletOptions.identityUri),
+                                new Uri(_walletOptions.iconUri, UriKind.Relative),
+                                _walletOptions.name, cluster);
+                        }
                     }
                 }
             );
@@ -77,6 +107,7 @@ namespace Solana.Unity.SDK
                 throw new Exception(result.Error.Message);
             }
             _authToken = authorization.AuthToken;
+            LastSignInResult = authorization.SignInResult;
             var publicKey = new PublicKey(authorization.PublicKey);
             if (_walletOptions.keepConnectionAlive)
             {
