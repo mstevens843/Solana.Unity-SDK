@@ -133,6 +133,11 @@ namespace Solana.Unity.SDK
                 throw new Exception(result.Error.Message);
             }
 
+            if (authorization == null)
+            {
+                Debug.LogError($"{TAG} _Login | FAIL authorization object is null despite successful scenario");
+                throw new Exception("Authorization failed: wallet returned null authorization");
+            }
             _authToken = authorization.AuthToken;
             LastSignInResult = authorization.SignInResult;
             var publicKey = new PublicKey(authorization.PublicKey);
@@ -219,6 +224,11 @@ namespace Solana.Unity.SDK
                 throw new Exception(result.Error.Message);
             }
 
+            if (authorization == null)
+            {
+                Debug.LogError($"{TAG} _SignAllTransactions | FAIL authorization object is null despite successful scenario");
+                throw new Exception("Sign failed: wallet returned null authorization");
+            }
             _authToken = authorization.AuthToken;
             Debug.Log($"{TAG} _SignAllTransactions | RESULT=SUCCESS authToken={_authToken} signed_count={res.SignedPayloads.Count}");
             return res.SignedPayloads.Select(transaction => Transaction.Deserialize(transaction)).ToArray();
@@ -276,6 +286,7 @@ namespace Solana.Unity.SDK
                         catch (Exception ex)
                         {
                             Debug.LogError($"{TAG} _SignAndSendAllTransactions | ACTION_2 EXCEPTION type={ex.GetType().Name} msg={ex.Message} stack={ex.StackTrace}");
+                            throw;
                         }
                     }
                 }
@@ -289,6 +300,11 @@ namespace Solana.Unity.SDK
                 throw new Exception(result.Error.Message);
             }
 
+            if (authorization == null)
+            {
+                Debug.LogError($"{TAG} _SignAndSendAllTransactions | FAIL authorization object is null despite successful scenario");
+                throw new Exception("SignAndSend failed: wallet returned null authorization");
+            }
             _authToken = authorization.AuthToken;
             Debug.Log($"{TAG} _SignAndSendAllTransactions | RESULT=SUCCESS authToken={_authToken} sig_count={res.Signatures.Count} signatures=[{string.Join(",", res.Signatures)}]");
             return res;
@@ -412,6 +428,11 @@ namespace Solana.Unity.SDK
                 throw new Exception(result.Error.Message);
             }
 
+            if (authorization == null)
+            {
+                Debug.LogError($"{TAG} SignMessage | FAIL authorization object is null despite successful scenario");
+                throw new Exception("SignMessage failed: wallet returned null authorization");
+            }
             _authToken = authorization.AuthToken;
             var sigBytes = signedMessages.SignedPayloadsBytes[0];
             Debug.Log($"{TAG} SignMessage | RESULT=SUCCESS authToken={_authToken} sig_bytes_len={sigBytes.Length} sig_base64={Convert.ToBase64String(sigBytes)}");
