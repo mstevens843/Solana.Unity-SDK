@@ -137,6 +137,12 @@ namespace Solana.Unity.SDK
             LastSignInResult = authorization.SignInResult;
             var publicKey = new PublicKey(authorization.PublicKey);
 
+            if (useSiws && LastSignInResult == null)
+            {
+                Debug.LogError($"{TAG} _Login | SIWS_REJECTED wallet did not return sign_in_result — SIWS was requested but wallet ignored it. Rejecting non-SIWS connection.");
+                throw new Exception("SIWS authorization failed: wallet did not return sign_in_result. The wallet may not support Sign In With Solana.");
+            }
+
             Debug.Log($"{TAG} _Login | RESULT=SUCCESS pubkey={publicKey} authToken={_authToken} authToken_len={_authToken?.Length ?? 0} usedSiws={useSiws} hasSignInResult={LastSignInResult != null}");
 
             if (_walletOptions.keepConnectionAlive)

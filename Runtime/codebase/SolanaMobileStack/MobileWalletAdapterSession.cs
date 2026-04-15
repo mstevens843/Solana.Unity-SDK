@@ -155,8 +155,12 @@ public class MobileWalletAdapterSession
             throw new InvalidOperationException(e);
         }
 
-        var seqNumByte = new ArraySegment<byte>(payload, 0, SeqNumLengthBytes).Reverse().ToArray();
-        var seqNum = BitConverter.ToUInt32(seqNumByte, 0);
+        // Big-endian seqnum bytes from wire — used as GCM AAD (must match what wallet used to encrypt)
+        var seqNumBytesBE = new ArraySegment<byte>(payload, 0, SeqNumLengthBytes).ToArray();
+        // Little-endian copy for BitConverter.ToUInt32
+        var seqNumBytesLE = (byte[])seqNumBytesBE.Clone();
+        Array.Reverse(seqNumBytesLE);
+        var seqNum = BitConverter.ToUInt32(seqNumBytesLE, 0);
 
         if (seqNum != _mSeqNumberRx + 1)
         {
@@ -165,29 +169,18 @@ public class MobileWalletAdapterSession
             throw new InvalidOperationException(e);
         }
         _mSeqNumberRx = (int)seqNum;
-    
+
         try
         {
             var keyParam = new KeyParameter(_encryptionKey);
             var iv = new ArraySegment<byte>( payload, SeqNumLengthBytes, AesIvLengthBytes).ToArray();
             var cipher = new GcmBlockCipher(new AesEngine());
-            var parameters = new AeadParameters(keyParam, AesTagLengthBytes * 8, iv, associatedText: seqNumByte);
+            var parameters = new AeadParameters(keyParam, AesTagLengthBytes * 8, iv, associatedText: seqNumBytesBE);
             cipher.Init(false, parameters);
             var toDecipher = new ArraySegment<byte>( payload, SeqNumLengthBytes + AesIvLengthBytes, payload.Length - SeqNumLengthBytes - AesIvLengthBytes).ToArray();
             var decipherText = new byte[cipher.GetOutputSize(toDecipher.Length)];
             int len = cipher.ProcessBytes(payload, SeqNumLengthBytes + AesIvLengthBytes, toDecipher.Length, decipherText, 0);
-            try
-            {
-                cipher.DoFinal(decipherText, len);
-            }
-            catch (InvalidCipherTextException e)
-            {
-                // Mac check fails with BouncyCastle, but message is correctly decrypted
-                if (!e.Message.Equals("mac check in GCM failed"))
-                {
-                    throw new InvalidOperationException("Error decrypting session payload", e);
-                }
-            }
+            cipher.DoFinal(decipherText, len);
             return decipherText;
         }
         catch (InvalidCipherTextException e)
@@ -197,10 +190,42 @@ public class MobileWalletAdapterSession
         }
     }
 
-    public ECPublicKeyParameters GenerateSessionEcdhSecret(byte[] otherPublicKey)
+    public bool IsV1Session { get; private set; }
+
+    public ECPublicKeyParameters GenerateSessionEcdhSecret(byte[] helloRspPayload)
     {
-        var publicKey = ParseHelloRsp(otherPublicKey);
-        return GenerateSessionEcdhSecret(publicKey);
+        // First 65 bytes = wallet's ECDH public key
+        var walletPublicKeyBytes = new byte[65];
+        Array.Copy(helloRspPayload, 0, walletPublicKeyBytes, 0, 65);
+        var publicKey = ParseHelloRsp(walletPublicKeyBytes);
+        var result = GenerateSessionEcdhSecret(publicKey);
+
+        // After 65 bytes = encrypted session properties (if present, indicates V1/MWA 2.0)
+        if (helloRspPayload.Length > 65)
+        {
+            try
+            {
+                var sessionPropsEncrypted = new byte[helloRspPayload.Length - 65];
+                Array.Copy(helloRspPayload, 65, sessionPropsEncrypted, 0, sessionPropsEncrypted.Length);
+                var sessionPropsDecrypted = DecryptSessionPayload(sessionPropsEncrypted);
+                var sessionPropsJson = System.Text.Encoding.UTF8.GetString(sessionPropsDecrypted);
+                Debug.Log($"[MWASession] SessionProperties | json={sessionPropsJson}");
+                // If we got here, the wallet supports V1 (MWA 2.0)
+                IsV1Session = true;
+            }
+            catch (Exception e)
+            {
+                Debug.Log($"[MWASession] SessionProperties | PARSE_FAILED falling back to legacy error={e.Message}");
+                IsV1Session = false;
+            }
+        }
+        else
+        {
+            Debug.Log("[MWASession] SessionProperties | NOT_PRESENT payload_len=65 — legacy session");
+            IsV1Session = false;
+        }
+
+        return result;
     }
 
     private ECPublicKeyParameters GenerateSessionEcdhSecret(ECPublicKeyParameters otherPublicKey)

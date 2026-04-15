@@ -11,7 +11,7 @@ public static class LocalAssociationIntentCreator
         intent.Call<AndroidJavaObject>("setAction", "android.intent.action.VIEW");
         intent.Call<AndroidJavaObject>("addCategory", "android.intent.category.BROWSABLE");
         var url = $"{AssociationContract.SchemeMobileWalletAdapter}:/" +
-                  $"{AssociationContract.LocalPathSuffix}?association={associationToken}&port={port}";
+                  $"{AssociationContract.LocalPathSuffix}?association={associationToken}&port={port}&v=1";
         var uriClass = new AndroidJavaClass("android.net.Uri");
         var uriData = uriClass.CallStatic<AndroidJavaObject>("parse", url);     
         intent.Call<AndroidJavaObject>("setData", uriData);
