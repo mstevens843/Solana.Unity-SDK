@@ -11,51 +11,197 @@ using UnityEngine.Scripting;
 [Preserve]
 public class MobileWalletAdapterClient: JsonRpc20Client, IAdapterOperations, IMessageReceiver
 {
-    
+    private const string TAG = "[MWAClient]";
+
     private int _mNextMessageId = 1;
 
     public MobileWalletAdapterClient(IMessageSender messageSender) : base(messageSender)
     {
     }
-    
+
+    // ─── AUTHORIZE (MWA 1.x — cluster) ─────────────────────────────────
+
     [Preserve]
     public Task<AuthorizationResult> Authorize(Uri identityUri, Uri iconUri, string identityName, string cluster)
     {
+        Debug.Log($"{TAG} Authorize | ENTRY identityUri={identityUri} iconUri={iconUri} identityName={identityName} cluster={cluster}");
+
         var request = PrepareAuthRequest(
             identityUri,
-            iconUri, 
-            identityName, 
+            iconUri,
+            identityName,
             cluster,
             "authorize");
-        
-        return SendRequest<AuthorizationResult>(request);
+
+        var json = JsonConvert.SerializeObject(request);
+        Debug.Log($"{TAG} Authorize | REQUEST json={json}");
+
+        return SendRequest<AuthorizationResult>(request, "Authorize");
     }
+
+    // ─── AUTHORIZE (MWA 2.0 — chain + features + SIWS) ─────────────────
+
+    [Preserve]
+    public Task<AuthorizationResult> Authorize(
+        Uri identityUri, Uri iconUri, string identityName,
+        string chain, string[] features, string[] addresses,
+        string authToken, JsonRequest.SignInPayload signInPayload)
+    {
+        Debug.Log($"{TAG} Authorize2 | ENTRY identityUri={identityUri} iconUri={iconUri} identityName={identityName} chain={chain} features=[{(features != null ? string.Join(",", features) : "null")}] addresses=[{(addresses != null ? string.Join(",", addresses) : "null")}] authToken={authToken ?? "null"} authToken_len={authToken?.Length ?? 0} signInPayload_null={signInPayload == null}");
+
+        if (identityUri != null && !identityUri.IsAbsoluteUri)
+        {
+            throw new ArgumentException("If non-null, identityUri must be an absolute, hierarchical Uri");
+        }
+        if (iconUri != null && iconUri.IsAbsoluteUri)
+        {
+            throw new ArgumentException("If non-null, iconRelativeUri must be a relative Uri");
+        }
+
+        var request = new JsonRequest
+        {
+            JsonRpc = "2.0",
+            Method = "authorize",
+            Params = new JsonRequest.JsonRequestParams
+            {
+                Identity = new JsonRequest.JsonRequestIdentity
+                {
+                    Uri = identityUri,
+                    Icon = iconUri,
+                    Name = identityName
+                },
+                Chain = chain,
+                Features = features?.ToList(),
+                Addresses = addresses?.ToList(),
+                AuthToken = authToken,
+                SignInPayload = signInPayload
+            },
+            Id = NextMessageId()
+        };
+
+        var json = JsonConvert.SerializeObject(request);
+        Debug.Log($"{TAG} Authorize2 | REQUEST json={json}");
+
+        return SendRequest<AuthorizationResult>(request, "Authorize2");
+    }
+
+    // ─── REAUTHORIZE ────────────────────────────────────────────────────
 
     public Task<AuthorizationResult> Reauthorize(Uri identityUri, Uri iconUri, string identityName, string authToken)
     {
+        Debug.Log($"{TAG} Reauthorize | ENTRY identityUri={identityUri} iconUri={iconUri} identityName={identityName} authToken={authToken ?? "null"} authToken_len={authToken?.Length ?? 0}");
+
         var request = PrepareAuthRequest(
             identityUri,
-            iconUri, 
-            identityName, 
+            iconUri,
+            identityName,
             null,
             "reauthorize");
-        
+
         request.Params.AuthToken = authToken;
 
-        return SendRequest<AuthorizationResult>(request);
+        var json = JsonConvert.SerializeObject(request);
+        Debug.Log($"{TAG} Reauthorize | REQUEST json={json}");
+
+        return SendRequest<AuthorizationResult>(request, "Reauthorize");
     }
-    
+
+    // ─── SIGN TRANSACTIONS ──────────────────────────────────────────────
+
     public Task<SignedResult> SignTransactions(IEnumerable<byte[]> transactions)
     {
-        var request = PrepareSignTransactionsRequest(transactions);
-        return SendRequest<SignedResult>(request);
+        var payloads = transactions.Select(Convert.ToBase64String).ToList();
+        Debug.Log($"{TAG} SignTransactions | ENTRY payload_count={payloads.Count} payloads=[{string.Join(",", payloads)}]");
+
+        var request = new JsonRequest
+        {
+            JsonRpc = "2.0",
+            Method = "sign_transactions",
+            Params = new JsonRequest.JsonRequestParams
+            {
+                Payloads = payloads
+            },
+            Id = NextMessageId()
+        };
+
+        var json = JsonConvert.SerializeObject(request);
+        Debug.Log($"{TAG} SignTransactions | REQUEST json={json}");
+
+        return SendRequest<SignedResult>(request, "SignTransactions");
     }
+
+    // ─── SIGN MESSAGES ──────────────────────────────────────────────────
 
     public Task<SignedResult> SignMessages(IEnumerable<byte[]> messages, IEnumerable<byte[]> addresses)
     {
-        var request = PrepareSignMessagesRequest(messages, addresses);
-        return SendRequest<SignedResult>(request);
+        var msgPayloads = messages.Select(Convert.ToBase64String).ToList();
+        var addrPayloads = addresses.Select(Convert.ToBase64String).ToList();
+        Debug.Log($"{TAG} SignMessages | ENTRY message_count={msgPayloads.Count} messages=[{string.Join(",", msgPayloads)}] address_count={addrPayloads.Count} addresses=[{string.Join(",", addrPayloads)}]");
+
+        var request = new JsonRequest
+        {
+            JsonRpc = "2.0",
+            Method = "sign_messages",
+            Params = new JsonRequest.JsonRequestParams
+            {
+                Payloads = msgPayloads,
+                Addresses = addrPayloads
+            },
+            Id = NextMessageId()
+        };
+
+        var json = JsonConvert.SerializeObject(request);
+        Debug.Log($"{TAG} SignMessages | REQUEST json={json}");
+
+        return SendRequest<SignedResult>(request, "SignMessages");
     }
+
+    // ─── SIGN AND SEND TRANSACTIONS (MWA 2.0) ──────────────────────────
+
+    public Task<SignAndSendResult> SignAndSendTransactions(IEnumerable<byte[]> transactions, JsonRequest.SignAndSendOptions options)
+    {
+        var payloads = transactions.Select(Convert.ToBase64String).ToList();
+        Debug.Log($"{TAG} SignAndSendTransactions | ENTRY payload_count={payloads.Count} payloads=[{string.Join(",", payloads)}] options_null={options == null} commitment={options?.Commitment ?? "null"} skip_preflight={options?.SkipPreflight?.ToString() ?? "null"} min_context_slot={options?.MinContextSlot?.ToString() ?? "null"} max_retries={options?.MaxRetries?.ToString() ?? "null"} wait_for_commitment={options?.WaitForCommitmentToSendNextTransaction?.ToString() ?? "null"}");
+
+        var request = new JsonRequest
+        {
+            JsonRpc = "2.0",
+            Method = "sign_and_send_transactions",
+            Params = new JsonRequest.JsonRequestParams
+            {
+                Payloads = payloads,
+                Options = options
+            },
+            Id = NextMessageId()
+        };
+
+        var json = JsonConvert.SerializeObject(request);
+        Debug.Log($"{TAG} SignAndSendTransactions | REQUEST json={json}");
+
+        return SendRequest<SignAndSendResult>(request, "SignAndSendTransactions");
+    }
+
+    // ─── GET CAPABILITIES (MWA 2.0 — non-privileged) ───────────────────
+
+    public Task<CapabilitiesResult> GetCapabilities()
+    {
+        Debug.Log($"{TAG} GetCapabilities | ENTRY (non-privileged, no params)");
+
+        var request = new JsonRequest
+        {
+            JsonRpc = "2.0",
+            Method = "get_capabilities",
+            Params = new JsonRequest.JsonRequestParams(),
+            Id = NextMessageId()
+        };
+
+        var json = JsonConvert.SerializeObject(request);
+        Debug.Log($"{TAG} GetCapabilities | REQUEST json={json}");
+
+        return SendRequest<CapabilitiesResult>(request, "GetCapabilities");
+    }
+
+    // ─── HELPERS ────────────────────────────────────────────────────────
 
     private JsonRequest PrepareAuthRequest(Uri uriIdentity, Uri icon, string name, string cluster, string method)
     {
@@ -85,38 +231,7 @@ public class MobileWalletAdapterClient: JsonRpc20Client, IAdapterOperations, IMe
         };
         return request;
     }
-    
-    private JsonRequest PrepareSignTransactionsRequest(IEnumerable<byte[]> transactions)
-    {
-        var request = new JsonRequest
-        {
-            JsonRpc = "2.0",
-            Method = "sign_transactions",
-            Params = new JsonRequest.JsonRequestParams
-            {
-                Payloads = transactions.Select(Convert.ToBase64String).ToList()
-            },
-            Id = NextMessageId()
-        };
-        return request;
-    }
-    
-    private JsonRequest PrepareSignMessagesRequest(IEnumerable<byte[]> messages, IEnumerable<byte[]> addresses)
-    {
-        var request = new JsonRequest
-        {
-            JsonRpc = "2.0",
-            Method = "sign_messages",
-            Params = new JsonRequest.JsonRequestParams
-            {
-                Payloads = messages.Select(Convert.ToBase64String).ToList(),
-                Addresses = addresses.Select(Convert.ToBase64String).ToList()
-            },
-            Id = NextMessageId()
-        };
-        return request;
-    }
-    
+
     private int NextMessageId()
     {
         return _mNextMessageId++;
