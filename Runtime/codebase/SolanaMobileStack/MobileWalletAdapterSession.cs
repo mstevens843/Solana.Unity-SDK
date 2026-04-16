@@ -111,6 +111,7 @@ public class MobileWalletAdapterSession
             throw new InvalidOperationException(e);
         }
         _mSeqNumberTx++;
+        Debug.Log($"[MWASession] EncryptSessionPayload | plaintext_len={payload.Length} seqTx={_mSeqNumberTx} key_len={_encryptionKey.Length}");
         var seqNum = BitConverter.GetBytes(_mSeqNumberTx).Reverse().ToArray();
 
         try
@@ -162,11 +163,11 @@ public class MobileWalletAdapterSession
         Array.Reverse(seqNumBytesLE);
         var seqNum = BitConverter.ToUInt32(seqNumBytesLE, 0);
 
+        Debug.Log($"[MWASession] DecryptSessionPayload | payload_len={payload.Length} seqRx_expected={_mSeqNumberRx + 1} seqRx_actual={seqNum} ciphertext_len={payload.Length - SeqNumLengthBytes - AesIvLengthBytes}");
         if (seqNum != _mSeqNumberRx + 1)
         {
-            const string e = "Encrypted messages has invalid sequence number";
-            Debug.LogError(e);
-            throw new InvalidOperationException(e);
+            Debug.LogError($"[MWASession] DecryptSessionPayload | SEQ_MISMATCH expected={_mSeqNumberRx + 1} actual={seqNum} diff={seqNum - (_mSeqNumberRx + 1)}");
+            throw new InvalidOperationException($"Encrypted message has invalid sequence number: expected {_mSeqNumberRx + 1}, got {seqNum}");
         }
         _mSeqNumberRx = (int)seqNum;
 
@@ -181,6 +182,7 @@ public class MobileWalletAdapterSession
             var decipherText = new byte[cipher.GetOutputSize(toDecipher.Length)];
             int len = cipher.ProcessBytes(payload, SeqNumLengthBytes + AesIvLengthBytes, toDecipher.Length, decipherText, 0);
             cipher.DoFinal(decipherText, len);
+            Debug.Log($"[MWASession] DecryptSessionPayload | SUCCESS decrypted_len={decipherText.Length} seqRx={_mSeqNumberRx}");
             return decipherText;
         }
         catch (InvalidCipherTextException e)
@@ -235,6 +237,7 @@ public class MobileWalletAdapterSession
 
         var ecdhSecret = keyAgreement.CalculateAgreement(otherPublicKey);
         _encryptionKey = CreateEncryptionKey(ecdhSecret.ToByteArrayUnsigned(), PublicKey);
+        Debug.Log($"[MWASession] GenerateSessionEcdhSecret | ecdh_secret_len={ecdhSecret.ToByteArrayUnsigned().Length} encryption_key_len={_encryptionKey.Length}");
         return otherPublicKey;
     }
 

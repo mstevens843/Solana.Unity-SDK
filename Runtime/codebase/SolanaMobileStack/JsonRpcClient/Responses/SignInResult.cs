@@ -21,4 +21,8 @@ public class SignInResult
     [JsonProperty("signature_type")]
     [RequiredMember]
     public string SignatureType { get; set; }
+
+    [Preserve]
+    [RequiredMember]
+    public SignInResult() { }
 }

@@ -83,47 +83,80 @@ namespace Solana.Unity.SDK
             var cluster = RPCNameMap[(int)RpcCluster];
             var useSiws = !string.IsNullOrEmpty(_walletOptions.siwsDomain);
 
+            SignedResult siwsFallbackSig = null;
+            string siwsMessageText = null;
+
             Debug.Log($"{TAG} _Login | scenario_created cluster={cluster} rpcCluster={RpcCluster} useSiws={useSiws} siwsDomain={_walletOptions.siwsDomain ?? "null"} siwsStatement={_walletOptions.siwsStatement ?? "null"}");
 
-            var result = await localAssociationScenario.StartAndExecute(
-                new List<Action<IAdapterOperations>>
-                {
-                    async client =>
-                    {
-                        if (useSiws)
-                        {
-                            var chain = ClusterToChain.TryGetValue(cluster, out var c) ? c : "solana:mainnet";
-                            var signInPayload = new JsonRequest.SignInPayload
-                            {
-                                Domain = _walletOptions.siwsDomain,
-                                Statement = _walletOptions.siwsStatement,
-                                Uri = _walletOptions.identityUri
-                            };
+            var actions = new List<Action<IAdapterOperations>>();
 
-                            Debug.Log($"{TAG} _Login | SIWS_PATH calling Authorize2 chain={chain} signInPayload_domain={signInPayload.Domain} signInPayload_statement={signInPayload.Statement} signInPayload_uri={signInPayload.Uri}");
-                            authorization = await client.Authorize(
-                                new Uri(_walletOptions.identityUri),
-                                new Uri(_walletOptions.iconUri, UriKind.Relative),
-                                _walletOptions.name,
-                                chain,
-                                null,
-                                null,
-                                null,
-                                signInPayload);
-                            Debug.Log($"{TAG} _Login | Authorize2 DONE authToken={authorization?.AuthToken ?? "null"} authToken_len={authorization?.AuthToken?.Length ?? 0} pubkey_null={authorization?.PublicKey == null} accounts_count={authorization?.Accounts?.Count ?? 0} accountLabel={authorization?.AccountLabel ?? "null"} walletUriBase={authorization?.WalletUriBase?.ToString() ?? "null"} signInResult_null={authorization?.SignInResult == null} signInResult_address={authorization?.SignInResult?.Address ?? "null"} signInResult_sig={authorization?.SignInResult?.Signature ?? "null"} signInResult_sig_type={authorization?.SignInResult?.SignatureType ?? "null"}");
-                        }
-                        else
-                        {
-                            Debug.Log($"{TAG} _Login | LEGACY_PATH calling Authorize cluster={cluster} identityUri={_walletOptions.identityUri} iconUri={_walletOptions.iconUri} name={_walletOptions.name}");
-                            authorization = await client.Authorize(
-                                new Uri(_walletOptions.identityUri),
-                                new Uri(_walletOptions.iconUri, UriKind.Relative),
-                                _walletOptions.name, cluster);
-                            Debug.Log($"{TAG} _Login | Authorize DONE authToken={authorization?.AuthToken ?? "null"} authToken_len={authorization?.AuthToken?.Length ?? 0} pubkey_null={authorization?.PublicKey == null} accounts_count={authorization?.Accounts?.Count ?? 0} accountLabel={authorization?.AccountLabel ?? "null"} walletUriBase={authorization?.WalletUriBase?.ToString() ?? "null"} signInResult_null={authorization?.SignInResult == null}");
-                        }
+            if (useSiws)
+            {
+                var chain = ClusterToChain.TryGetValue(cluster, out var c) ? c : "solana:mainnet";
+                var signInPayload = new JsonRequest.SignInPayload
+                {
+                    Domain = _walletOptions.siwsDomain,
+                    Statement = _walletOptions.siwsStatement,
+                    Uri = _walletOptions.identityUri
+                };
+
+                // Action 1: Authorize with sign_in_payload (MWA 2.0 SIWS)
+                actions.Add(async client =>
+                {
+                    Debug.Log($"{TAG} _Login | SIWS_PATH calling Authorize2 chain={chain} signInPayload_domain={signInPayload.Domain} signInPayload_statement={signInPayload.Statement} signInPayload_uri={signInPayload.Uri}");
+                    authorization = await client.Authorize(
+                        new Uri(_walletOptions.identityUri),
+                        new Uri(_walletOptions.iconUri, UriKind.Relative),
+                        _walletOptions.name,
+                        chain,
+                        null,
+                        null,
+                        null,
+                        signInPayload);
+                    Debug.Log($"{TAG} _Login | Authorize2 DONE authToken={authorization?.AuthToken ?? "null"} authToken_len={authorization?.AuthToken?.Length ?? 0} pubkey_null={authorization?.PublicKey == null} accounts_count={authorization?.Accounts?.Count ?? 0} accountLabel={authorization?.AccountLabel ?? "null"} walletUriBase={authorization?.WalletUriBase?.ToString() ?? "null"} signInResult_null={authorization?.SignInResult == null} signInResult_address={authorization?.SignInResult?.Address ?? "null"} signInResult_sig={authorization?.SignInResult?.Signature ?? "null"} signInResult_sig_type={authorization?.SignInResult?.SignatureType ?? "null"}");
+                });
+
+                // Action 2: Fallback — if wallet didn't return sign_in_result,
+                // construct CAIP-122 SIWS message and sign via sign_messages
+                actions.Add(async client =>
+                {
+                    if (authorization?.SignInResult != null)
+                    {
+                        Debug.Log($"{TAG} _Login | SIWS_NATIVE wallet returned sign_in_result — fallback not needed");
+                        return;
                     }
-                }
-            );
+                    if (authorization?.PublicKey == null)
+                    {
+                        Debug.LogError($"{TAG} _Login | SIWS_FALLBACK_SKIP no pubkey from authorize — cannot construct SIWS message");
+                        return;
+                    }
+
+                    var pubkeyBase58 = new PublicKey(authorization.PublicKey).Key;
+                    siwsMessageText = $"{_walletOptions.siwsDomain} wants you to sign in with your Solana account:\n{pubkeyBase58}\n\n{_walletOptions.siwsStatement}\n\nURI: {_walletOptions.identityUri}";
+                    var messageBytes = System.Text.Encoding.UTF8.GetBytes(siwsMessageText);
+
+                    Debug.Log($"{TAG} _Login | SIWS_FALLBACK signing CAIP-122 message via sign_messages len={messageBytes.Length} pubkey={pubkeyBase58}");
+                    siwsFallbackSig = await client.SignMessages(
+                        messages: new List<byte[]> { messageBytes },
+                        addresses: new List<byte[]> { authorization.PublicKey }
+                    );
+                    Debug.Log($"{TAG} _Login | SIWS_FALLBACK sign_messages DONE sig_count={siwsFallbackSig?.SignedPayloads?.Count ?? 0}");
+                });
+            }
+            else
+            {
+                actions.Add(async client =>
+                {
+                    Debug.Log($"{TAG} _Login | LEGACY_PATH calling Authorize cluster={cluster} identityUri={_walletOptions.identityUri} iconUri={_walletOptions.iconUri} name={_walletOptions.name}");
+                    authorization = await client.Authorize(
+                        new Uri(_walletOptions.identityUri),
+                        new Uri(_walletOptions.iconUri, UriKind.Relative),
+                        _walletOptions.name, cluster);
+                    Debug.Log($"{TAG} _Login | Authorize DONE authToken={authorization?.AuthToken ?? "null"} authToken_len={authorization?.AuthToken?.Length ?? 0} pubkey_null={authorization?.PublicKey == null} accounts_count={authorization?.Accounts?.Count ?? 0} accountLabel={authorization?.AccountLabel ?? "null"} walletUriBase={authorization?.WalletUriBase?.ToString() ?? "null"} signInResult_null={authorization?.SignInResult == null}");
+                });
+            }
+
+            var result = await localAssociationScenario.StartAndExecute(actions);
 
             Debug.Log($"{TAG} _Login | scenario_result wasSuccessful={result.WasSuccessful} error={result.Error?.Message ?? "null"} error_code={result.Error?.Code.ToString() ?? "null"}");
 
@@ -142,10 +175,24 @@ namespace Solana.Unity.SDK
             LastSignInResult = authorization.SignInResult;
             var publicKey = new PublicKey(authorization.PublicKey);
 
+            // If wallet returned sign_in_result natively (e.g. Backpack), it's already set.
+            // If not, build it from the fallback sign_messages result (e.g. Phantom, Jupiter).
+            if (useSiws && LastSignInResult == null && siwsFallbackSig?.SignedPayloads?.Count > 0)
+            {
+                LastSignInResult = new SignInResult
+                {
+                    Address = authorization.Accounts[0].Address,
+                    SignedMessage = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(siwsMessageText)),
+                    Signature = siwsFallbackSig.SignedPayloads[0],
+                    SignatureType = "ed25519"
+                };
+                Debug.Log($"{TAG} _Login | SIWS_FALLBACK_RESULT address={LastSignInResult.Address} sig={LastSignInResult.Signature}");
+            }
+
             if (useSiws && LastSignInResult == null)
             {
-                Debug.LogError($"{TAG} _Login | SIWS_REJECTED wallet did not return sign_in_result — SIWS was requested but wallet ignored it. Rejecting non-SIWS connection.");
-                throw new Exception("SIWS authorization failed: wallet did not return sign_in_result. The wallet may not support Sign In With Solana.");
+                Debug.LogError($"{TAG} _Login | SIWS_FAILED both native sign_in_result and fallback sign_messages failed");
+                throw new Exception("SIWS authorization failed: wallet did not return sign_in_result and fallback signing failed");
             }
 
             Debug.Log($"{TAG} _Login | RESULT=SUCCESS pubkey={publicKey} authToken={_authToken} authToken_len={_authToken?.Length ?? 0} usedSiws={useSiws} hasSignInResult={LastSignInResult != null}");
@@ -186,7 +233,8 @@ namespace Solana.Unity.SDK
                 {
                     async client =>
                     {
-                        Debug.Log($"{TAG} _SignAllTransactions | ACTION_1 auth/reauth authToken_empty={_authToken.IsNullOrEmpty()}");
+                        var signTokenPrefix = _authToken != null && _authToken.Length > 30 ? _authToken[..30] : _authToken ?? "null";
+                        Debug.Log($"{TAG} _SignAllTransactions | ACTION_1 auth/reauth authToken_empty={_authToken.IsNullOrEmpty()} authToken_prefix={signTokenPrefix}");
                         if (_authToken.IsNullOrEmpty())
                         {
                             Debug.Log($"{TAG} _SignAllTransactions | calling Authorize cluster={cluster}");
@@ -194,16 +242,17 @@ namespace Solana.Unity.SDK
                                 new Uri(_walletOptions.identityUri),
                                 new Uri(_walletOptions.iconUri, UriKind.Relative),
                                 _walletOptions.name, cluster);
-                            Debug.Log($"{TAG} _SignAllTransactions | Authorize DONE authToken={authorization?.AuthToken ?? "null"} accounts_count={authorization?.Accounts?.Count ?? 0}");
+                            Debug.Log($"{TAG} _SignAllTransactions | Authorize DONE authToken_len={authorization?.AuthToken?.Length ?? 0} accounts_count={authorization?.Accounts?.Count ?? 0}");
                         }
                         else
                         {
-                            Debug.Log($"{TAG} _SignAllTransactions | calling Reauthorize authToken={_authToken}");
+                            Debug.Log($"{TAG} _SignAllTransactions | calling Reauthorize authToken_prefix={signTokenPrefix}");
                             authorization = await client.Reauthorize(
                                 new Uri(_walletOptions.identityUri),
                                 new Uri(_walletOptions.iconUri, UriKind.Relative),
                                 _walletOptions.name, _authToken);
-                            Debug.Log($"{TAG} _SignAllTransactions | Reauthorize DONE authToken={authorization?.AuthToken ?? "null"}");
+                            var newSignTokenPrefix = authorization?.AuthToken != null && authorization.AuthToken.Length > 30 ? authorization.AuthToken[..30] : authorization?.AuthToken ?? "null";
+                            Debug.Log($"{TAG} _SignAllTransactions | Reauthorize DONE authToken_len={authorization?.AuthToken?.Length ?? 0} newToken_prefix={newSignTokenPrefix}");
                         }
                     },
                     async client =>
@@ -246,14 +295,16 @@ namespace Solana.Unity.SDK
             var localAssociationScenario = new LocalAssociationScenario();
             AuthorizationResult authorization = null;
 
-            Debug.Log($"{TAG} _SignAndSendAllTransactions | scenario_created cluster={cluster} authToken={_authToken ?? "null"} authToken_len={_authToken?.Length ?? 0} authToken_empty={_authToken.IsNullOrEmpty()}");
+            var tokenPrefix = _authToken != null && _authToken.Length > 30 ? _authToken[..30] : _authToken ?? "null";
+            Debug.Log($"{TAG} _SignAndSendAllTransactions | scenario_created cluster={cluster} authToken_len={_authToken?.Length ?? 0} authToken_empty={_authToken.IsNullOrEmpty()} authToken_prefix={tokenPrefix}");
 
             var result = await localAssociationScenario.StartAndExecute(
                 new List<Action<IAdapterOperations>>
                 {
                     async client =>
                     {
-                        Debug.Log($"{TAG} _SignAndSendAllTransactions | ACTION_1 auth/reauth authToken_empty={_authToken.IsNullOrEmpty()}");
+                        var actionTokenPrefix = _authToken != null && _authToken.Length > 30 ? _authToken[..30] : _authToken ?? "null";
+                        Debug.Log($"{TAG} _SignAndSendAllTransactions | ACTION_1 auth/reauth authToken_empty={_authToken.IsNullOrEmpty()} authToken_prefix={actionTokenPrefix}");
                         if (_authToken.IsNullOrEmpty())
                         {
                             Debug.Log($"{TAG} _SignAndSendAllTransactions | calling Authorize cluster={cluster}");
@@ -270,7 +321,8 @@ namespace Solana.Unity.SDK
                                 new Uri(_walletOptions.identityUri),
                                 new Uri(_walletOptions.iconUri, UriKind.Relative),
                                 _walletOptions.name, _authToken);
-                            Debug.Log($"{TAG} _SignAndSendAllTransactions | Reauthorize DONE authToken={authorization?.AuthToken ?? "null"}");
+                            var newTokenPrefix = authorization?.AuthToken != null && authorization.AuthToken.Length > 30 ? authorization.AuthToken[..30] : authorization?.AuthToken ?? "null";
+                            Debug.Log($"{TAG} _SignAndSendAllTransactions | Reauthorize DONE authToken_len={authorization?.AuthToken?.Length ?? 0} newToken_prefix={newTokenPrefix} accounts_count={authorization?.Accounts?.Count ?? 0}");
                         }
                     },
                     async client =>
@@ -388,7 +440,8 @@ namespace Solana.Unity.SDK
                 {
                     async client =>
                     {
-                        Debug.Log($"{TAG} SignMessage | ACTION_1 auth/reauth authToken_empty={_authToken.IsNullOrEmpty()}");
+                        var msgTokenPrefix = _authToken != null && _authToken.Length > 30 ? _authToken[..30] : _authToken ?? "null";
+                        Debug.Log($"{TAG} SignMessage | ACTION_1 auth/reauth authToken_empty={_authToken.IsNullOrEmpty()} authToken_prefix={msgTokenPrefix}");
                         if (_authToken.IsNullOrEmpty())
                         {
                             Debug.Log($"{TAG} SignMessage | calling Authorize cluster={cluster}");
@@ -396,16 +449,17 @@ namespace Solana.Unity.SDK
                                 new Uri(_walletOptions.identityUri),
                                 new Uri(_walletOptions.iconUri, UriKind.Relative),
                                 _walletOptions.name, cluster);
-                            Debug.Log($"{TAG} SignMessage | Authorize DONE authToken={authorization?.AuthToken ?? "null"} accounts_count={authorization?.Accounts?.Count ?? 0}");
+                            Debug.Log($"{TAG} SignMessage | Authorize DONE authToken_len={authorization?.AuthToken?.Length ?? 0} accounts_count={authorization?.Accounts?.Count ?? 0}");
                         }
                         else
                         {
-                            Debug.Log($"{TAG} SignMessage | calling Reauthorize authToken={_authToken}");
+                            Debug.Log($"{TAG} SignMessage | calling Reauthorize authToken_prefix={msgTokenPrefix}");
                             authorization = await client.Reauthorize(
                                 new Uri(_walletOptions.identityUri),
                                 new Uri(_walletOptions.iconUri, UriKind.Relative),
                                 _walletOptions.name, _authToken);
-                            Debug.Log($"{TAG} SignMessage | Reauthorize DONE authToken={authorization?.AuthToken ?? "null"}");
+                            var newMsgTokenPrefix = authorization?.AuthToken != null && authorization.AuthToken.Length > 30 ? authorization.AuthToken[..30] : authorization?.AuthToken ?? "null";
+                            Debug.Log($"{TAG} SignMessage | Reauthorize DONE authToken_len={authorization?.AuthToken?.Length ?? 0} newToken_prefix={newMsgTokenPrefix}");
                         }
                     },
                     async client =>

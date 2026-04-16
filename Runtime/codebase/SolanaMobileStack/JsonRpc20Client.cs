@@ -20,6 +20,8 @@ namespace Solana.Unity.SDK
 
         private readonly IMessageSender _messageSender;
 
+        public int PendingRequests { get; private set; }
+
         protected JsonRpc20Client(IMessageSender messageSender)
         {
             _messageSender = messageSender;
@@ -28,13 +30,15 @@ namespace Solana.Unity.SDK
         protected Task<T> SendRequest<T>(JsonRequest jsonRequest, string methodName = "Unknown")
         {
             var message = JsonConvert.SerializeObject(jsonRequest);
-            Debug.Log($"{TAG} SendRequest | method={methodName} id={jsonRequest.Id} json_len={message.Length} json={message}");
             var messageBytes = System.Text.Encoding.UTF8.GetBytes(message);
+            Debug.Log($"{TAG} SendRequest | method={methodName} id={jsonRequest.Id} json_len={message.Length} byte_len={messageBytes.Length} json={message}");
             _messageSender.Send(messageBytes);
+            PendingRequests++;
             var authTaskCompletionSource = new TaskCompletionSource<T>();
 
             // Register the message listener
             RegisterListener(authTaskCompletionSource, methodName);
+            authTaskCompletionSource.Task.ContinueWith(_ => PendingRequests--);
             return authTaskCompletionSource.Task;
         }
 
@@ -70,24 +74,35 @@ namespace Solana.Unity.SDK
             try
             {
                 var authorizationResult = JsonConvert.DeserializeObject<Response<T>>(message);
+                if (authorizationResult == null)
+                {
+                    Debug.LogError($"{TAG} Receiver | method={methodName} RESULT=NULL_RESPONSE deserialization returned null raw_len={message.Length}");
+                    task.SetException(new InvalidOperationException($"Response deserialized to null for method {methodName}"));
+                    return;
+                }
                 if (authorizationResult.Error != null)
                 {
-                    Debug.Log($"{TAG} Receiver | method={methodName} RESULT=ERROR code={authorizationResult.Error.Code} message={authorizationResult.Error.Message}");
+                    Debug.Log($"{TAG} Receiver | method={methodName} RESULT=ERROR id={authorizationResult.Id} code={authorizationResult.Error.Code} message={authorizationResult.Error.Message}");
                     task.SetException(new Exception(authorizationResult.Error.Message));
                 }
                 else
                 {
                     var resultJson = JsonConvert.SerializeObject(authorizationResult.Result);
-                    Debug.Log($"{TAG} Receiver | method={methodName} RESULT=SUCCESS id={authorizationResult.Id} parsed_result={resultJson}");
+                    var resultIsNull = authorizationResult.Result == null;
+                    Debug.Log($"{TAG} Receiver | method={methodName} RESULT=SUCCESS id={authorizationResult.Id} result_null={resultIsNull} parsed_result={resultJson}");
                     task.SetResult(authorizationResult.Result);
                 }
             }
             catch (JsonException e)
             {
-                Debug.Log($"{TAG} Receiver | method={methodName} RESULT=PARSE_ERROR type={e.GetType().Name} message={e.Message}");
+                Debug.LogError($"{TAG} Receiver | method={methodName} RESULT=PARSE_ERROR type={e.GetType().Name} message={e.Message} raw_len={message.Length}");
                 task.SetException(e);
             }
-
+            catch (Exception e)
+            {
+                Debug.LogError($"{TAG} Receiver | method={methodName} RESULT=UNEXPECTED_ERROR type={e.GetType().Name} message={e.Message} stack={e.StackTrace}");
+                task.SetException(e);
+            }
         }
     }
 }

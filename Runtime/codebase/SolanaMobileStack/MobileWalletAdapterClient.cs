@@ -89,7 +89,8 @@ public class MobileWalletAdapterClient: JsonRpc20Client, IAdapterOperations, IMe
 
     public Task<AuthorizationResult> Reauthorize(Uri identityUri, Uri iconUri, string identityName, string authToken)
     {
-        Debug.Log($"{TAG} Reauthorize | ENTRY identityUri={identityUri} iconUri={iconUri} identityName={identityName} authToken={authToken ?? "null"} authToken_len={authToken?.Length ?? 0}");
+        var tokenPrefix = authToken != null && authToken.Length > 20 ? authToken[..20] : authToken ?? "null";
+        Debug.Log($"{TAG} Reauthorize | ENTRY identityUri={identityUri} iconUri={iconUri} identityName={identityName} authToken_len={authToken?.Length ?? 0} authToken_prefix={tokenPrefix}");
 
         var request = PrepareAuthRequest(
             identityUri,
@@ -134,9 +135,13 @@ public class MobileWalletAdapterClient: JsonRpc20Client, IAdapterOperations, IMe
 
     public Task<SignedResult> SignMessages(IEnumerable<byte[]> messages, IEnumerable<byte[]> addresses)
     {
-        var msgPayloads = messages.Select(Convert.ToBase64String).ToList();
-        var addrPayloads = addresses.Select(Convert.ToBase64String).ToList();
-        Debug.Log($"{TAG} SignMessages | ENTRY message_count={msgPayloads.Count} messages=[{string.Join(",", msgPayloads)}] address_count={addrPayloads.Count} addresses=[{string.Join(",", addrPayloads)}]");
+        var msgList = messages.ToList();
+        var addrList = addresses.ToList();
+        var msgPayloads = msgList.Select(Convert.ToBase64String).ToList();
+        var addrPayloads = addrList.Select(Convert.ToBase64String).ToList();
+        var msgSizes = string.Join(",", msgList.Select(m => m.Length));
+        var addrSizes = string.Join(",", addrList.Select(a => a.Length));
+        Debug.Log($"{TAG} SignMessages | ENTRY message_count={msgPayloads.Count} msg_byte_sizes=[{msgSizes}] address_count={addrPayloads.Count} addr_byte_sizes=[{addrSizes}]");
 
         var request = new JsonRequest
         {
@@ -151,7 +156,7 @@ public class MobileWalletAdapterClient: JsonRpc20Client, IAdapterOperations, IMe
         };
 
         var json = JsonConvert.SerializeObject(request);
-        Debug.Log($"{TAG} SignMessages | REQUEST json={json}");
+        Debug.Log($"{TAG} SignMessages | REQUEST id={request.Id} json_len={json.Length} json={json}");
 
         return SendRequest<SignedResult>(request, "SignMessages");
     }
