@@ -26,23 +26,26 @@ namespace Solana.Unity.SDK
     public class SolanaMobileWalletAdapter : WalletBase
     {
         private readonly SolanaMobileWalletAdapterOptions _walletOptions;
-        
+
         private Transaction _currentTransaction;
 
         private TaskCompletionSource<Account> _loginTaskCompletionSource;
         private TaskCompletionSource<Transaction> _signedTransactionTaskCompletionSource;
         private readonly WalletBase _internalWallet;
         private string _authToken;
+        private readonly IMwaAuthCache _authCache;
 
         public SolanaMobileWalletAdapter(
             SolanaMobileWalletAdapterOptions solanaWalletOptions,
-            RpcCluster rpcCluster = RpcCluster.DevNet, 
-            string customRpcUri = null, 
-            string customStreamingRpcUri = null, 
-            bool autoConnectOnStartup = false) : base(rpcCluster, customRpcUri, customStreamingRpcUri, autoConnectOnStartup
+            RpcCluster rpcCluster = RpcCluster.DevNet,
+            string customRpcUri = null,
+            string customStreamingRpcUri = null,
+            bool autoConnectOnStartup = false,
+            IMwaAuthCache authCache = null) : base(rpcCluster, customRpcUri, customStreamingRpcUri, autoConnectOnStartup
         )
         {
             _walletOptions = solanaWalletOptions;
+            _authCache = authCache ?? new PlayerPrefsAuthCache();
             if (Application.platform != RuntimePlatform.Android)
             {
                 throw new Exception("SolanaMobileWalletAdapter can only be used on Android");
@@ -53,9 +56,24 @@ namespace Solana.Unity.SDK
         {
             if (_walletOptions.keepConnectionAlive)
             {
-                string pk = PlayerPrefs.GetString("pk", null);
-                if (!pk.IsNullOrEmpty()) return new Account(string.Empty, new PublicKey(pk));
+                string pk = _authCache.LoadPublicKey();
+                if (!pk.IsNullOrEmpty())
+                {
+                    // Restore cached auth token so Reauthorize works without prompting
+                    var cachedToken = _authCache.LoadToken(pk);
+                    if (!cachedToken.IsNullOrEmpty())
+                    {
+                        _authToken = cachedToken;
+                        Debug.Log($"[MWA] _Login | CACHE_RESTORE pubkey={pk} token_len={cachedToken.Length}");
+                    }
+                    else
+                    {
+                        Debug.Log($"[MWA] _Login | CACHE_HIT pubkey={pk} but no cached token — will need fresh authorize");
+                    }
+                    return new Account(string.Empty, new PublicKey(pk));
+                }
             }
+            Debug.Log("[MWA] _Login | FRESH — no cached pubkey, opening wallet for authorize");
             AuthorizationResult authorization = null;
             var localAssociationScenario = new LocalAssociationScenario();
             var cluster = RPCNameMap[(int)RpcCluster];
@@ -80,7 +98,9 @@ namespace Solana.Unity.SDK
             var publicKey = new PublicKey(authorization.PublicKey);
             if (_walletOptions.keepConnectionAlive)
             {
-                PlayerPrefs.SetString("pk", publicKey.ToString());
+                _authCache.SavePublicKey(publicKey.ToString());
+                _authCache.SaveToken(publicKey.ToString(), _authToken);
+                Debug.Log($"[MWA] _Login | CACHE_SAVE pubkey={publicKey} token_len={_authToken?.Length ?? 0}");
             }
             return new Account(string.Empty, publicKey);
         }
@@ -131,6 +151,11 @@ namespace Solana.Unity.SDK
                 throw new Exception(result.Error.Message);
             }
             _authToken = authorization.AuthToken;
+            if (Account?.PublicKey != null)
+            {
+                _authCache.SaveToken(Account.PublicKey.ToString(), _authToken);
+                Debug.Log($"[MWA] _SignAllTransactions | CACHE_UPDATE token_len={_authToken?.Length ?? 0}");
+            }
             return res.SignedPayloads.Select(transaction => Transaction.Deserialize(transaction)).ToArray();
         }
 
@@ -138,8 +163,9 @@ namespace Solana.Unity.SDK
         public override void Logout()
         {
             base.Logout();
-            PlayerPrefs.DeleteKey("pk");
-            PlayerPrefs.Save();
+            _authToken = null;
+            _authCache.Clear();
+            Debug.Log("[MWA] Logout | CACHE_CLEAR auth token and cached pubkey cleared");
         }
 
         public override async Task<byte[]> SignMessage(byte[] message)
@@ -183,6 +209,11 @@ namespace Solana.Unity.SDK
                 throw new Exception(result.Error.Message);
             }
             _authToken = authorization.AuthToken;
+            if (Account?.PublicKey != null)
+            {
+                _authCache.SaveToken(Account.PublicKey.ToString(), _authToken);
+                Debug.Log($"[MWA] SignMessage | CACHE_UPDATE token_len={_authToken?.Length ?? 0}");
+            }
             return signedMessages.SignedPayloadsBytes[0];
         }
 
