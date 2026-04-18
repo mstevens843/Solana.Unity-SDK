@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using Cysharp.Threading.Tasks;
 using Solana.Unity.Programs;
@@ -272,6 +272,7 @@ namespace Solana.Unity.SDK
         /// <returns>The signature bytes</returns>
         public Task<byte[]> SignMessage(string message)
         {
+            if (message == null) throw new ArgumentNullException(nameof(message));
             return SignMessage(Encoding.UTF8.GetBytes(message));
         }
 
